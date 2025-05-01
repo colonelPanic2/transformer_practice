@@ -174,4 +174,7 @@ cython_debug/
 .pypirc
 
 *.pyc
+*/__pycache__
+*/checkpoints
+*/datasets
 
