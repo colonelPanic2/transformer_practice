@@ -100,36 +100,40 @@ class SentimentDataset(data.Dataset):
             self.labels = [c for c in self.data['sentiment'].map(self.sentiment_labels).tolist()]
         elif mode == "validation":
             self.data = pd.read_csv(path_join(DATASET_PATH, "twitter_validation.csv")).drop_duplicates().reset_index(drop=True)
-            self.labels = torch.tensor([c for c in self.data['sentiment'].map(self.sentiment_labels).tolist()])
+            self.labels = [c for c in self.data['sentiment'].map(self.sentiment_labels).tolist()]
         elif mode == "test":
             # NOTE: This approach to evenly distributing the sentiment labels in the training set only works because the dataset is already
             # close to being evenly distributed, so we can still get a decent sample size for each class.
             self.data = pd.read_csv(path_join(DATASET_PATH, "twitter_training.csv")).drop_duplicates().reset_index(drop=True)
-            # _, self.data = train_test_split(self.data, test_size=test_sample_frac, random_state=42, stratify=self.data['sentiment'])
-            # self.labels = torch.tensor([[c]*num_categories for c in self.data['sentiment'].map(self.sentiment_labels).tolist()])
-            df = pd.DataFrame(columns=self.data.columns)
-            self.data['sentiment'] = self.data['sentiment'].map(self.sentiment_labels)
-            min_category = self.data['sentiment'].value_counts().min()
-            N = math.floor(min_category * test_sample_frac)
-            N_train = min_category - N
-            for i in range(num_categories):
-                df_sentiment = self.data[self.data['sentiment'] == i]
-                N_ = math.floor(len(df_sentiment) - N_train)
-                # N = math.floor(len(df_sentiment)*test_sample_frac)
-                # print(f'(TEST) {i}: {N}')
-                if len(df_sentiment) > 1 and N_ == 0:
-                    N_ = 1
-                df = pd.concat([df, df_sentiment.sample(n=N_, random_state=42)])
-            self.data = df
-            self.labels = [c for c in self.data['sentiment'].tolist()]
+            # # _, self.data = train_test_split(self.data, test_size=test_sample_frac, random_state=42, stratify=self.data['sentiment'])
+            # # self.labels = torch.tensor([[c]*num_categories for c in self.data['sentiment'].map(self.sentiment_labels).tolist()])
+            # df = pd.DataFrame(columns=self.data.columns)
+            # self.data['sentiment'] = self.data['sentiment'].map(self.sentiment_labels)
+            # min_category = self.data['sentiment'].value_counts().min()
+            # N = math.floor(min_category * test_sample_frac)
+            # N_train = min_category - N
+            # for i in range(num_categories):
+            #     df_sentiment = self.data[self.data['sentiment'] == i]
+            #     N_ = math.floor(len(df_sentiment) - N_train)
+            #     # N = math.floor(len(df_sentiment)*test_sample_frac)
+            #     # print(f'(TEST) {i}: {N}')
+            #     if len(df_sentiment) > 1 and N_ == 0:
+            #         N_ = 1
+            #     df = pd.concat([df, df_sentiment.sample(n=N_, random_state=42)])
+            # self.data = df
+            # self.labels = [c for c in self.data['sentiment'].tolist()]
+            # self.index_vals = self.data.index
+            # self.data = self.data.sample(n=round(len(self.data)*test_sample_frac), random_state=42)
+            self.data = self.data.drop_duplicates('id')
+            self.labels = self.data['sentiment'].map(self.sentiment_labels).tolist()
             self.index_vals = self.data.index
-            self.data = self.data.sample(n=round(len(self.data)*test_sample_frac), random_state=42)
         # self.data.reset_index(drop=True, inplace=True)
         self.size = len(self.data)
         print(f"({mode}) Dataset size: {self.size}")
         print(f"({mode}) Category distribution: {self.data['sentiment'].value_counts()}")
         # self.labels = [c for c in self.data['sentiment'].map(self.sentiment_labels).tolist()]
         self.data = self.data['message'].tolist()
+
         # self.data = torch.stack(
         #     self.data['message'].apply(
         #         lambda x: torch.tensor(
@@ -181,7 +185,8 @@ class SentimentDataset(data.Dataset):
 
 
 
-
+from sklearn.utils.class_weight import compute_class_weight
+import numpy as np
 
 if __name__ == "__main__":
     BATCH_SIZE = 32#int(input("Enter batch size: "))
@@ -192,18 +197,22 @@ if __name__ == "__main__":
     dataset = partial(SentimentDataset, 280, 3, 0.1)
     test_dataset = dataset("test")
     test_loader  = data.DataLoader(test_dataset, batch_size=BATCH_SIZE)
-    train_loader = data.DataLoader(dataset("train", test_rows=test_dataset.get_index()), num_workers = 10, persistent_workers=True, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, pin_memory=True)
+    train_loader = data.DataLoader(dataset("train", test_rows=test_dataset.get_index()), num_workers = 5, persistent_workers=True, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, pin_memory=True)
     # train_loader = data.DataLoader(dataset("train"), num_workers = 10, persistent_workers=True, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, pin_memory=True)
     val_loader   = data.DataLoader(dataset("validation"), batch_size=BATCH_SIZE)
     inp_data, labels = train_loader.dataset[0]
     print(f"Input data: {inp_data.shape}\nLabels:     {labels.shape}")
 
+    train_class_weights = compute_class_weight('balanced', classes=np.unique(train_loader.dataset.labels), y=train_loader.dataset.labels)
+    val_class_weights = compute_class_weight('balanced', classes=np.unique(val_loader.dataset.labels), y=val_loader.dataset.labels)
+    
     class SentimentPredictor(TransformerPredictor):
         def _calculate_loss(self, batch, mode="train"):
             inp_data, labels = batch
 
             # inp_data = F.one_hot(inp_data, num_classes=self.hparams.num_classes).float()
             preds = self.forward(inp_data, add_positional_encoding=True)
+            class_weights = torch.tensor(train_class_weights if mode == "train" else val_class_weights, dtype=torch.float32).to(device)
             # NOTE: by transforming the predictions and labels as shown below, we make the loss function treat each token prediction independently when
             # calculating the loss. 
             # preds.view(-1, preds.size(-1)): [batch_size, seq_len, num_classes] => [batch_size * seq_len, num_classes]
@@ -217,7 +226,10 @@ if __name__ == "__main__":
             # loss = F.cross_entropy(preds.permute(1,0,2).squeeze(0).view(-1), labels.view(-1))
             # if mode == 'val':
             #     print(preds.shape)
-            loss = F.cross_entropy(preds.mean(dim=1), F.one_hot(labels.view(-1).long(), num_classes=self.hparams.num_classes).float())
+            loss = F.cross_entropy(
+                preds.mean(dim=1), 
+                F.one_hot(labels.view(-1).long(), num_classes=self.hparams.num_classes).float(),
+                weight = class_weights)
             acc = (preds.mean(dim=1).argmax(dim=-1) == labels).float().mean()
 
             self.log(f"{mode}_loss", loss)
@@ -244,7 +256,7 @@ if __name__ == "__main__":
                             callbacks=[ModelCheckpoint(save_weights_only=True, mode="min", monitor="val_acc")],
                             accelerator="gpu" if str(device).startswith("cuda") else "cpu",
                             devices=1,
-                            max_epochs=1,
+                            max_epochs=3,
                             gradient_clip_val=1
                             )
         trainer.logger._default_hp_metric = None # Optional logging argument that we don't need
@@ -271,7 +283,7 @@ if __name__ == "__main__":
         num_heads =  10,
         num_classes = train_loader.dataset.num_categories,
         num_layers = 10,
-        dropout = 0.1,
+        dropout = 0.15,
         lr = 5e-6,
         warmup = 100,
         max_seq_len=280
