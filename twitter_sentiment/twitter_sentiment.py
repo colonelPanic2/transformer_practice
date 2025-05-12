@@ -113,6 +113,8 @@ class SentimentDataset(data.Dataset):
                 N_ = math.floor(len(df_sentiment) - N_train)
                 if len(df_sentiment) > 1 and N_ == 0:
                     N_ = 1
+                elif len(df_sentiment) > min_category:
+                    N_ -= math.floor(8*N_*test_sample_frac)
                 df = pd.concat([df, df_sentiment.sample(n=N_, random_state=42)])
             self.data = df['message'].tolist()
             self.labels = df['sentiment'].tolist()
@@ -140,6 +142,10 @@ class SentimentDataset(data.Dataset):
                 # print(f'(TEST) {i}: {N}')
                 if len(df_sentiment) > 1 and N_ == 0:
                     N_ = 1
+                elif len(df_sentiment) > min_category:
+                    # print(N_, math.floor(20*N_*test_sample_frac))
+                    N_ -= math.floor(8*N_*test_sample_frac)
+                    
                 df = pd.concat([df, df_sentiment.sample(n=N_, random_state=42)])
             self.data = df['message'].tolist()
             self.labels = df['sentiment'].tolist()
@@ -187,7 +193,7 @@ if __name__ == "__main__":
 
     ### TODO: Figure out how to make more efficient use of the dataset. At the moment, the model appears to be overfitting to the training data
     ### and just guessing the most common class every time.
-    dataset = partial(SentimentDataset, MAX_SEQ_LEN, 2, 0.2, 0.2)
+    dataset = partial(SentimentDataset, MAX_SEQ_LEN, 2, 0.1, 0.05)
     test_dataset = dataset("test")
     val_dataset = dataset("validation", test_rows=test_dataset.get_index())
     train_dataset = dataset("train", test_rows=test_dataset.get_index() + val_dataset.get_index())
@@ -257,7 +263,7 @@ if __name__ == "__main__":
                             callbacks=callbacks,
                             accelerator="gpu" if str(device).startswith("cuda") else "cpu",
                             devices=1,
-                            max_epochs=1,
+                            max_epochs=3,
                             # gradient_clip_val=1
                             )
         trainer.logger._default_hp_metric = None # Optional logging argument that we don't need
@@ -280,7 +286,7 @@ if __name__ == "__main__":
     # TODO: Find more ways to improve accuracy. We're getting about 33% accuracy on 3 categories, which is about the same as random guessing.
     model, result = train_sentiment(
         input_dim = 768,#tokenizer.vocab_size,
-        model_dim = 400,
+        model_dim = 500,
         num_heads =  4,
         num_classes = train_loader.dataset.num_categories,
         num_layers = 3,
