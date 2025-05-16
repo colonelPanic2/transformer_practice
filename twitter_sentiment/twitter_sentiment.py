@@ -44,7 +44,7 @@ DATASET_PATH = root_dir+ '/twitter_sentiment/datasets'
 # Path to the folder where the model checkpoints will be saved
 CHECKPOINT_PATH = root_dir+ '/twitter_sentiment/checkpoints'
 
-print(CHECKPOINT_PATH)
+# print(CHECKPOINT_PATH)
 
 pl.seed_everything(42) # Set the random seed for reproducibility
 
@@ -57,6 +57,46 @@ torch.set_float32_matmul_precision('medium')
 
 # The below code trains a transformer model to answer the question: "Is this a positive, negative or neutral sentiment?"
 
+def save_datasets_to_latest_version(train_dataset, val_dataset, test_dataset):
+    logs_dir = Path(f"{CHECKPOINT_PATH}/twitter_sentiment/lightning_logs")
+    if not logs_dir.exists():
+        print("No lightning_logs directory found.")
+        return
+
+    # Find all version directories
+    version_dirs = [d for d in logs_dir.iterdir() if d.is_dir() and re.match(r'version_\d+', d.name)]
+    if not version_dirs:
+        print("No version directories found.")
+        return
+
+    # Get the most recent version by highest number
+    latest_version = max(version_dirs, key=lambda d: int(re.search(r'\d+', d.name).group()))
+    datasets_path = latest_version / "datasets.xlsx"
+
+    # Convert datasets to DataFrames
+    def dataset_to_df(dataset):
+        if hasattr(dataset, 'data') and hasattr(dataset, 'labels'):
+            return pd.DataFrame({'message': dataset.data, 'sentiment': dataset.labels})
+        else:
+            # fallback: try to iterate
+            messages, sentiments = [], []
+            for x, y in dataset:
+                messages.append(x)
+                sentiments.append(y.item() if hasattr(y, 'item') else y)
+            return pd.DataFrame({'message': messages, 'sentiment': sentiments})
+
+    with pd.ExcelWriter(datasets_path) as writer:
+        dataset_to_df(train_dataset).to_excel(writer, sheet_name='train', index=False)
+        dataset_to_df(val_dataset).to_excel(writer, sheet_name='validation', index=False)
+        dataset_to_df(test_dataset).to_excel(writer, sheet_name='test', index=False)
+
+    print(f"Datasets saved to {datasets_path}")
+
+# Example usage (call after datasets are created):
+# save_datasets_to_latest_version(train_dataset, val_dataset, test_dataset)
+
+def permute_df(df):
+    return df.sample(frac=1, random_state=42)#.reset_index(drop=True)
 
 from copy import deepcopy
 from sklearn.model_selection import train_test_split
@@ -100,7 +140,7 @@ class SentimentDataset(data.Dataset):
             # self.labels = labels
             self.data = self.data['message'].tolist()
         elif mode == "validation":
-            self.data = pd.read_csv(path_join(DATASET_PATH, "training.1600000.processed.noemoticon.csv")).drop_duplicates().reset_index(drop=True)#"twitter_validation.csv")).drop_duplicates().reset_index(drop=True)
+            self.data = permute_df(pd.read_csv(path_join(DATASET_PATH, "training.1600000.processed.noemoticon.csv")).drop_duplicates().reset_index(drop=True))#"twitter_validation.csv")).drop_duplicates().reset_index(drop=True)
 
             self.data = self.data[~self.data.index.isin(test_rows)]
             df = pd.DataFrame(columns=self.data.columns)
@@ -114,7 +154,7 @@ class SentimentDataset(data.Dataset):
                 if len(df_sentiment) > 1 and N_ == 0:
                     N_ = 1
                 elif len(df_sentiment) > min_category:
-                    N_ -= math.floor(8*N_*test_sample_frac)
+                    N_ -= math.floor(9.85*N_*test_sample_frac)
                 df = pd.concat([df, df_sentiment.sample(n=N_, random_state=42)])
             self.data = df['message'].tolist()
             self.labels = df['sentiment'].tolist()
@@ -123,7 +163,7 @@ class SentimentDataset(data.Dataset):
             # self.labels = self.data['sentiment'].tolist()
             # self.data = self.data['message'].tolist()
         elif mode == "test":
-            self.data = pd.read_csv(path_join(DATASET_PATH, "training.1600000.processed.noemoticon.csv")).drop_duplicates().reset_index(drop=True)
+            self.data = permute_df(pd.read_csv(path_join(DATASET_PATH, "training.1600000.processed.noemoticon.csv")).drop_duplicates().reset_index(drop=True))
             # self.data = pd.read_csv(path_join(DATASET_PATH, "twitter_training.csv")).drop_duplicates().reset_index(drop=True)
             # self.data = self.data[self.data.duplicated('id', keep='first')]
             # self.labels = self.data['sentiment'].map(self.sentiment_labels).tolist()
@@ -144,7 +184,7 @@ class SentimentDataset(data.Dataset):
                     N_ = 1
                 elif len(df_sentiment) > min_category:
                     # print(N_, math.floor(20*N_*test_sample_frac))
-                    N_ -= math.floor(8*N_*test_sample_frac)
+                    N_ -= math.floor(9.75*N_*test_sample_frac)
                     
                 df = pd.concat([df, df_sentiment.sample(n=N_, random_state=42)])
             self.data = df['message'].tolist()
@@ -154,7 +194,10 @@ class SentimentDataset(data.Dataset):
 
         self.size = len(self.data)
         print(f"({mode}) Dataset size: {self.size}")
-        print(f"({mode}) Category distribution: {pd.DataFrame({'sentiment': self.labels}).value_counts()}")
+        df_distribution = pd.DataFrame({'sentiment': self.labels}).value_counts().reset_index(name='row_count')
+        df_distribution['% of total'] = df_distribution.apply(lambda x: f"{round(x['row_count'] / self.size * 100, 3)}%", axis=1)
+        df_distribution = df_distribution.sort_values(by=['sentiment']).reset_index(drop=True)
+        print(f"({mode}) Category distribution:\n{df_distribution}")
 
         # Load tokenizer and embedding model
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
@@ -185,15 +228,17 @@ class SentimentDataset(data.Dataset):
 from torchmetrics.classification import MulticlassPrecision, MulticlassRecall, MulticlassF1Score
 from sklearn.utils.class_weight import compute_class_weight
 import numpy as np
+import re
+from pathlib import Path
 # def main():
 if __name__ == "__main__":
     MAX_SEQ_LEN = 280 + 2 # 280 characters + 2 special tokens (CLS and SEP)
     BATCH_SIZE = 32#int(input("Enter batch size: "))
-
+    NUM_CLASSES = 2
 
     ### TODO: Figure out how to make more efficient use of the dataset. At the moment, the model appears to be overfitting to the training data
     ### and just guessing the most common class every time.
-    dataset = partial(SentimentDataset, MAX_SEQ_LEN, 2, 0.1, 0.05)
+    dataset = partial(SentimentDataset, MAX_SEQ_LEN, NUM_CLASSES, 0.1, 0.05)
     test_dataset = dataset("test")
     val_dataset = dataset("validation", test_rows=test_dataset.get_index())
     train_dataset = dataset("train", test_rows=test_dataset.get_index() + val_dataset.get_index())
@@ -201,10 +246,11 @@ if __name__ == "__main__":
     val_loader   = data.DataLoader(val_dataset, batch_size=BATCH_SIZE)
     train_loader = data.DataLoader(train_dataset, num_workers = 8, persistent_workers=True, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, pin_memory=True)
     inp_data, labels = test_loader.dataset[0]
-    print(f"Input data: {inp_data.shape}\nLabels:     {labels.shape}")
+    # print(f"Input data: {inp_data.shape}\nLabels:     {labels.shape}")
 
     train_class_weights = compute_class_weight('balanced', classes=np.unique(train_loader.dataset.labels), y=train_loader.dataset.labels)
-    val_class_weights = compute_class_weight('balanced', classes=np.unique(val_loader.dataset.labels), y=val_loader.dataset.labels)
+    # val_class_weights = compute_class_weight('balanced', classes=np.unique(val_loader.dataset.labels), y=val_loader.dataset.labels)
+    val_class_weights = compute_class_weight(class_weight=None, classes=np.unique(val_loader.dataset.labels), y=val_loader.dataset.labels)
     # val_class_weights = train_class_weights
     class SentimentPredictor(TransformerPredictor):
         def _calculate_f1(self, preds, labels):
@@ -263,8 +309,8 @@ if __name__ == "__main__":
                             callbacks=callbacks,
                             accelerator="gpu" if str(device).startswith("cuda") else "cpu",
                             devices=1,
-                            max_epochs=3,
-                            # gradient_clip_val=1
+                            max_epochs=2,
+                            gradient_clip_val=1
                             )
         trainer.logger._default_hp_metric = None # Optional logging argument that we don't need
         pretrained_filename = os.path.join(CHECKPOINT_PATH, "hi.ckpt")#"twitter_sentiment/lightning_logs/version_123/checkpoints/best_acc.ckpt")#"SentimentTask.ckpt")
@@ -274,6 +320,8 @@ if __name__ == "__main__":
         else:
             model = SentimentPredictor(max_iters=trainer.max_epochs*len(train_loader), **kwargs)
             trainer.fit(model, train_loader, val_loader)
+            save_datasets_to_latest_version(train_dataset, val_dataset, test_dataset)
+
         # Test best model on validation and test set
         val_result = trainer.test(model, val_loader, verbose=False)
         test_result = trainer.test(model, test_loader, verbose=False)
@@ -284,18 +332,24 @@ if __name__ == "__main__":
     # print(input_dim) 
     # 5087
     # TODO: Find more ways to improve accuracy. We're getting about 33% accuracy on 3 categories, which is about the same as random guessing.
-    model, result = train_sentiment(
-        input_dim = 768,#tokenizer.vocab_size,
-        model_dim = 500,
-        num_heads =  4,
-        num_classes = train_loader.dataset.num_categories,
-        num_layers = 3,
-        dropout = 0.0,
-        lr = 5e-6,
-        warmup = 100,
-        max_seq_len=MAX_SEQ_LEN
-    )
-
+    try:
+        model, result = train_sentiment(
+            input_dim = 768,#tokenizer.vocab_size,
+            model_dim = 768,
+            num_heads =  6,
+            num_classes = NUM_CLASSES,#train_loader.dataset.num_categories,
+            num_layers = 3,
+            dropout = 0.4,
+            lr = 7.5e-6,
+            warmup = 100,
+            max_seq_len=MAX_SEQ_LEN,
+            input_dropout = 0.4
+        )
+        save_datasets_to_latest_version(train_dataset, val_dataset, test_dataset)
+    except KeyboardInterrupt:
+        print("Training interrupted. Saving datasets...")
+        save_datasets_to_latest_version(train_dataset, val_dataset, test_dataset)
+        raise
 
     print(f"\nVal accuracy:  {(100.0 * result['val_acc']):4.2f}%")
     print(f"Test accuracy: {(100.0 * result['test_acc']):4.2f}%")
