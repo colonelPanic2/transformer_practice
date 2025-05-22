@@ -224,6 +224,64 @@ class SentimentDataset(data.Dataset):
         labels = torch.tensor([self.labels[idx]], dtype=torch.float32)
         return tokenized_text, labels#, mask
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+GAMMA = 1.0
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        """
+        Args:
+            alpha: scalar or tensor of shape (num_classes,)
+            gamma: focusing parameter
+            reduction: 'mean', 'sum', or 'none'
+        """
+        super(FocalLoss, self).__init__()
+        if isinstance(alpha, (list, tuple)):
+            self.alpha = torch.tensor(alpha)
+        else:
+            self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, logits, targets):
+        """
+        logits: (batch_size, num_classes)
+        targets: (batch_size,) with values in [0, num_classes)
+        """
+        num_classes = logits.size(1)
+        device = logits.device
+
+        # Convert alpha to tensor and move to device
+        if isinstance(self.alpha, torch.Tensor):
+            alpha = self.alpha.to(device)
+            alpha_t = alpha[targets]  # Shape: (batch_size,)
+        else:
+            alpha_t = torch.full_like(targets, fill_value=self.alpha, dtype=torch.float)
+
+        # Compute probabilities
+        ce_loss = F.cross_entropy(logits, targets, reduction='none')  # Shape: (batch_size,)
+        probs = F.softmax(logits, dim=1)
+        targets_one_hot = F.one_hot(targets, num_classes=num_classes).float()
+        pt = (probs * targets_one_hot).sum(dim=1)  # Shape: (batch_size,)
+
+        # Compute focal weight
+        focal_weight = alpha_t * (1 - pt) ** self.gamma  # Shape: (batch_size,)
+        loss = focal_weight * ce_loss  # Shape: (batch_size,)
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+
+
 
 from torchmetrics.classification import MulticlassPrecision, MulticlassRecall, MulticlassF1Score
 from sklearn.utils.class_weight import compute_class_weight
@@ -249,9 +307,14 @@ if __name__ == "__main__":
     # print(f"Input data: {inp_data.shape}\nLabels:     {labels.shape}")
 
     train_class_weights = compute_class_weight('balanced', classes=np.unique(train_loader.dataset.labels), y=train_loader.dataset.labels)
+    smoothed_weights = np.sqrt(train_class_weights)
+    train_class_weights = torch.tensor(smoothed_weights / smoothed_weights.sum(), dtype=torch.float32).to(device)
     # val_class_weights = compute_class_weight('balanced', classes=np.unique(val_loader.dataset.labels), y=val_loader.dataset.labels)
     val_class_weights = compute_class_weight(class_weight=None, classes=np.unique(val_loader.dataset.labels), y=val_loader.dataset.labels)
     # val_class_weights = train_class_weights
+
+    
+
     class SentimentPredictor(TransformerPredictor):
         def _calculate_f1(self, preds, labels):
             f1 = MulticlassF1Score(num_classes=self.hparams.num_classes, average='macro').to(device)(preds, labels)
@@ -266,11 +329,12 @@ if __name__ == "__main__":
             # NOTE: by transforming the predictions and labels as shown below, we make the loss function take the mean of the class predictions of each token
             # and compare it to the labels.
             # labels_onehot = F.one_hot(labels.view(-1).long(), num_classes=self.hparams.num_classes).float()
-            loss = F.cross_entropy(
-                preds, 
-                labels.view(-1).long(),
-                weight = class_weights
-            )
+            loss = FocalLoss(class_weights, gamma=GAMMA).forward(preds,labels.view(-1).long())
+            # loss = F.cross_entropy(
+            #     preds, 
+            #     labels.view(-1).long(),
+            #     weight = class_weights
+            # )
             eval_preds = preds.argmax(dim=-1).float()
             acc = (eval_preds == labels).float().mean()
             # probs = torch.sigmoid(preds)
@@ -309,7 +373,7 @@ if __name__ == "__main__":
                             callbacks=callbacks,
                             accelerator="gpu" if str(device).startswith("cuda") else "cpu",
                             devices=1,
-                            max_epochs=2,
+                            max_epochs=1,
                             gradient_clip_val=1
                             )
         trainer.logger._default_hp_metric = None # Optional logging argument that we don't need
@@ -337,12 +401,12 @@ if __name__ == "__main__":
             input_dim = 768,#tokenizer.vocab_size,
             model_dim = 768,
             num_heads =  6,
-            num_classes = NUM_CLASSES,#train_loader.dataset.num_categories,
+            num_classes = 2,
             num_layers = 3,
             dropout = 0.4,
-            lr = 7.5e-6,
+            lr = 7.5e-5,
             warmup = 100,
-            max_seq_len=MAX_SEQ_LEN,
+            max_seq_len=282,
             input_dropout = 0.4
         )
         save_datasets_to_latest_version(train_dataset, val_dataset, test_dataset)

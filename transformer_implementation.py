@@ -226,7 +226,9 @@ class TransformerPredictor(pl.LightningModule):
         mask = (x != PADDING_TOKEN_ID).long()
         mask_diag = torch.diag_embed(mask)
         nonzero_diag_mask = (mask != PADDING_TOKEN_ID).unsqueeze(-2)
-        conditional_mask = self.upper_mask & nonzero_diag_mask
+        # conditional_mask = self.upper_mask & nonzero_diag_mask
+        conditional_mask = nonzero_diag_mask & torch.ones_like(self.upper_mask).bool()
+        # This only masks the padding tokens. Non-padding tokens are not masked
         mask_diag[conditional_mask] = 1
         return mask_diag
     def forward(self, x, mask=None, add_positional_encoding=True):
