@@ -273,3 +273,56 @@ class TransformerPredictor(pl.LightningModule):
         raise NotImplementedError
     def test_step(self, batch, batch_idx):
         raise NotImplementedError
+    
+
+
+
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        """
+        Args:
+            alpha: scalar or tensor of shape (num_classes,)
+            gamma: focusing parameter
+            reduction: 'mean', 'sum', or 'none'
+        """
+        super(FocalLoss, self).__init__()
+        if isinstance(alpha, (list, tuple)):
+            self.alpha = torch.tensor(alpha)
+        else:
+            self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, logits, targets):
+        """
+        logits: (batch_size, num_classes)
+        targets: (batch_size,) with values in [0, num_classes)
+        """
+        num_classes = logits.size(1)
+        device = logits.device
+
+        # Convert alpha to tensor and move to device
+        if isinstance(self.alpha, torch.Tensor):
+            alpha = self.alpha.to(device)
+            alpha_t = alpha[targets]  # Shape: (batch_size,)
+        else:
+            alpha_t = torch.full_like(targets, fill_value=self.alpha, dtype=torch.float)
+
+        # Compute probabilities
+        ce_loss = F.cross_entropy(logits, targets, reduction='none')  # Shape: (batch_size,)
+        probs = F.softmax(logits, dim=1)
+        targets_one_hot = F.one_hot(targets, num_classes=num_classes).float()
+        pt = (probs * targets_one_hot).sum(dim=1)  # Shape: (batch_size,)
+
+        # Compute focal weight
+        focal_weight = alpha_t * (1 - pt) ** self.gamma  # Shape: (batch_size,)
+        loss = focal_weight * ce_loss  # Shape: (batch_size,)
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
