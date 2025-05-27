@@ -9,8 +9,10 @@ import torch.utils.data as data
 from math import floor
 import torch
 from transformers import AutoTokenizer, AutoModel
-TOKENIZER = AutoTokenizer.from_pretrained("bert-base-uncased")
-model = AutoModel.from_pretrained("bert-base-uncased")
+import chardet
+REF_MODEL = 'distilbert-base-uncased-finetuned-sst-2-english'# 'bert-base-uncased'
+TOKENIZER = AutoTokenizer.from_pretrained(REF_MODEL)
+model = AutoModel.from_pretrained(REF_MODEL)
 EMBEDDING_LAYER = model.embeddings.word_embeddings
 MAX_SEQ_LEN = 280 + 2 # 280 characters + 2 special tokens (CLS and SEP)
 NUM_CLASSES = 2
@@ -30,15 +32,15 @@ dataset_distributions = {
         1: 0.49749+train_diff
     },
     'validation': {
-        0: 0.5,
-        1: 0.5
+        0: 0.0,
+        1: 1.0
     }
 }
 
 redistribute_allocs = {
-    'train': 0.7,
-    'validation': 0.13,
-    'test': 0.17
+    'train': 0.3206,
+    'validation': 0.0062,
+    'test': 0.6732
 }
 
 # Path to the folder where the datasets are/will be downloaded
@@ -47,10 +49,10 @@ DATASET_PATH = root_dir+ '/twitter_sentiment/datasets'
 datasets_map = {
     'Sentiment Analysis Dataset': {
         'author': 'Abhishek Shrivastava',
-        'file_path': 'training.1600000.processed.noemoticon.csv',
+        'file_path': 'sentiment_analysis_0/training.1600000.processed.noemoticon.csv',
         'colname_map': {
-            'sentiment': 'sentiment',
-            'message': 'message'
+            'polarity of tweet': 'sentiment',
+            'text of the tweet': 'message'
         },
         'category_map': {
             0: 0,
@@ -60,6 +62,34 @@ datasets_map = {
             4: 1
         },
         'primary_dataset': True
+    },
+    'Sentiment Analysis Dataset (training subset)': {
+        'author': 'Abhishek Shrivastava',
+        'file_path': 'sentiment_analysis_0/train.csv',
+        'colname_map': {
+            'sentiment': 'sentiment',
+            'text': 'message'
+        },
+        'category_map': {
+            'neutral': 2,
+            'positive': 0,
+            'negative': 1
+        },
+        'primary_dataset': False
+    },
+    'Sentiment Analysis Dataset (test subset)': {
+        'author': 'Abhishek Shrivastava',
+        'file_path': 'sentiment_analysis_0/test.csv',
+        'colname_map': {
+            'sentiment': 'sentiment',
+            'text': 'message'
+        },
+        'category_map': {
+            'neutral': 2,
+            'positive': 0,
+            'negative': 1
+        },
+        'primary_dataset': False
     },
     'Twitter and Reddit Sentimental analysis Dataset': {
         'author': '',
@@ -77,7 +107,7 @@ datasets_map = {
     },
     'twitter_training': {
         'author': '<UNKNOWN>',
-        'file_path': 'twitter_training.csv',
+        'file_path': 'beginner_dataset/twitter_training.csv',
         'colname_map': {
             'sentiment': 'sentiment',
             'message': 'message'
@@ -90,13 +120,56 @@ datasets_map = {
         },
         'primary_dataset': False
     },
-
+    'twitter_validation': {
+        'author': '<UNKNOWN>',
+        'file_path': 'beginner_dataset/twitter_validation.csv',
+        'colname_map': {
+            'sentiment': 'sentiment',
+            'message': 'message'
+        },
+        'category_map': {
+            'Positive': 0,
+            'Negative': 1,
+            'Neutral': 2,
+            'Irrelevant': 2
+        },
+        'primary_dataset': False
+    },
+    'Sentiment Analysis Dataset (DailyDialog)': {
+        'author': 'mgmitesh',
+        'file_path': 'sentiment_analysis_dataset_mgmitesh/DailyDialog.csv',
+        'colname_map': {
+            'sentiment': 'sentiment',
+            'text': 'message'
+        },
+        'category_map': {
+            'joy': 0,
+            'sadness': 1,
+            'anger': 1,
+            'fear': 1,
+            'neutral': 2
+        },
+        'primary_dataset': False
+    }
 }
+def detect_file_encoding(file_path, num_bytes=4096):
+    """
+    Detect the encoding of a file using chardet.
+    Reads up to num_bytes from the file for detection.
+    """
+    with open(file_path, 'rb') as f:
+        rawdata = f.read(num_bytes)
+    result = chardet.detect(rawdata)
+    return result['encoding']
+
 def permute_df(df):
     return df.sample(frac=1, random_state=42)#.reset_index(drop=True)
 def prepare_dataset(dataset_info):
     file_path = path_join(DATASET_PATH, dataset_info['file_path'])
-    df_data = pd.read_csv(file_path)
+    encoding = detect_file_encoding(file_path)
+    if encoding == 'ascii':
+        encoding = 'utf-8'
+    df_data = pd.read_csv(file_path, encoding=encoding)
     df_data.rename(columns=dataset_info['colname_map'], inplace=True)
     df_data['sentiment'] = df_data['sentiment'].map(dataset_info['category_map'])
     df_data['file'] = dataset_info['file_path']
@@ -106,7 +179,7 @@ def combine_sentiment_datasets(target_classes=[0,1],supplement_minority_classes=
     """
     Combine multiple sentiment datasets into a single dataset.
     """
-    df = pd.DataFrame()
+    df = pd.DataFrame({'message': [], 'sentiment': []})
     for dataset_name, dataset_info in datasets_map.items():
         df_data = prepare_dataset(dataset_info)
         if dataset_info['primary_dataset']:
@@ -219,56 +292,22 @@ def get_datasets(dataset_distributions,redistribute_allocs):
 
     return df_train, df_val, df_test
 
-# def get_sentiment_datasets(seq_len, num_categories, test_sample_frac, val_sample_frac, mode, test_rows=None):
-#         base_df = combine_sentiment_datasets(target_classes=[0,1], supplement_minority_classes={1: 1})
-#         if mode == "train":
-#             data = base_df
-#             data = data[~data.index.isin(test_rows)]
-#             labels = [c for c in data['sentiment'].tolist()]
-#             data = data['message'].tolist()
-#             index_vals=None
-#         elif mode == "validation":
-#             data = permute_df(base_df)
-#             data = data[~data.index.isin(test_rows)]
-#             df = pd.DataFrame(columns=data.columns)
-#             min_category = data['sentiment'].value_counts().min()
-#             N = math.floor(min_category * val_sample_frac)
-#             N_train = min_category - N
-#             for i in range(num_categories):
-#                 df_sentiment = data[data['sentiment'] == i]
-#                 N_ = math.floor(len(df_sentiment) - N_train)
-#                 if len(df_sentiment) > 1 and N_ == 0:
-#                     N_ = 1
-#                 elif len(df_sentiment) > min_category:
-#                     N_ -= math.floor(9.85*N_*test_sample_frac)
-#                 df = pd.concat([df, df_sentiment.sample(n=N_, random_state=42)])
-#             data = df['message'].tolist()
-#             labels = df['sentiment'].tolist()
-#             index_vals = df.index
-#         elif mode == "test":
-#             data = permute_df(base_df)
-#             df = pd.DataFrame(columns=data.columns)
-#             min_category = data['sentiment'].value_counts().min()
-#             N = math.floor(min_category * test_sample_frac)
-#             N_train = min_category - N
-#             for i in range(num_categories):
-#                 df_sentiment = data[data['sentiment'] == i]
-#                 N_ = math.floor(len(df_sentiment) - N_train)
-#                 if len(df_sentiment) > 1 and N_ == 0:
-#                     N_ = 1
-#                 elif len(df_sentiment) > min_category:
-#                     N_ -= math.floor(9.75*N_*test_sample_frac)
-#                 df = pd.concat([df, df_sentiment.sample(n=N_, random_state=42)])
-#             data = df['message'].tolist()
-#             labels = df['sentiment'].tolist()
-#             index_vals = df.index
-#         return data, labels, index_vals, len(data)
+
 def get_sentiment_datasets(dataset,mode,num_categories):
         data = dataset['message'].tolist()
         labels = dataset['sentiment'].tolist()
         index_vals = dataset.index
         size = len(data)
         return data, labels, index_vals, size
+
+PADDING_TOKEN_ID = TOKENIZER.pad_token_id
+def collate_fn(batch):
+    # This function is used to collate the batch of data
+    # It should return a dictionary with keys 'x', 'y', and 'mask'
+    x = torch.stack([item['x'] for item in batch])
+    y = torch.stack([item['y'] for item in batch])
+    mask = torch.stack([item['mask'] for item in batch]).float()
+    return {'x': x.detach(), 'y': y.detach(), 'mask': mask.detach()}
 class SentimentDataset(data.Dataset):
     def __init__(self, dataset, mode, seq_len, num_categories):
     # def __init__(self, seq_len, num_categories, test_sample_frac, val_sample_frac, mode, test_rows=None):
@@ -276,7 +315,7 @@ class SentimentDataset(data.Dataset):
         self.num_categories = num_categories
         self.seq_len = seq_len            
         self.mode = mode.lower().strip()
-        
+        self.upper_mask = torch.triu(torch.ones(self.seq_len, self.seq_len), diagonal=1).bool()#.to('cuda:0')#.unsqueeze(0).unsqueeze(1).transpose(-1,-2).to('cuda:0')
         self.data, self.labels, self.index_vals, self.size = get_sentiment_datasets(dataset, mode, num_categories)
         # print(f"({mode}) Dataset size: {self.size}")
         # df_distribution = pd.DataFrame({'sentiment': self.labels}).value_counts().reset_index(name='row_count')
@@ -285,11 +324,22 @@ class SentimentDataset(data.Dataset):
         # print(f"({mode}) Category distribution:\n{df_distribution}")
 
         # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-
+        self.tokenizer = TOKENIZER#AutoTokenizer.from_pretrained(REF_MODEL)
+        self.embedding_layer = EMBEDDING_LAYER
+        self.embedding_layer.eval()
     def __len__(self):
         return self.size
-    
+
+    def get_input_mask(self, x):
+        mask = (x != PADDING_TOKEN_ID).long()
+        mask_diag = torch.diag_embed(mask)#.to('cuda:0')  # Create a diagonal mask
+        nonzero_diag_mask = (mask != PADDING_TOKEN_ID).unsqueeze(-2)#.to('cuda:0')  # Create a mask for non-padding tokens
+        # conditional_mask = self.upper_mask & nonzero_diag_mask
+        conditional_mask = nonzero_diag_mask & torch.ones_like(self.upper_mask).bool()#.to('cuda:0')  # Ensure the mask is on the same device
+        # This only masks the padding tokens. Non-padding tokens are not masked
+        mask_diag[conditional_mask] = 1
+        return mask_diag
+
     def __getitem__(self, idx, mask_padding=True):
         text = str(self.data[idx])
         tokenized_text = self.tokenizer.encode(
@@ -300,11 +350,10 @@ class SentimentDataset(data.Dataset):
             max_length=self.seq_len,
             return_tensors='pt'
         ).squeeze(0)  # Remove the batch dimension
-        # mask = None if not mask_padding else (tokenized_text != PADDING_TOKEN_ID).long()
-        # with torch.no_grad():
-        #     embedded_text = self.embedding_layer(tokenized_text).squeeze(0).float()  # Remove the batch dimension
+        mask = self.get_input_mask(tokenized_text)
+        embedded_text = self.embedding_layer(tokenized_text).squeeze(0).float()  # Remove the batch dimension
         labels = torch.tensor([self.labels[idx]], dtype=torch.float32)
-        return tokenized_text, labels#, mask
+        return {'x': embedded_text, 'mask': mask, 'y': labels}
 
 def get_dataset_objects(dataset_distributions,redistribute_allocs):
     df_train, df_val, df_test = get_datasets(dataset_distributions,redistribute_allocs)
@@ -313,12 +362,8 @@ def get_dataset_objects(dataset_distributions,redistribute_allocs):
     test_dataset = SentimentDataset(df_test, 'test', MAX_SEQ_LEN, NUM_CLASSES)
     return train_dataset, val_dataset, test_dataset
 
-def save_datasets_to_latest_version(train_dataset, val_dataset, test_dataset):
-    logs_dir = Path(f"{CHECKPOINT_PATH}/twitter_sentiment/lightning_logs")
-    if not logs_dir.exists():
-        print("No lightning_logs directory found.")
-        return
-
+logs_dir = Path(f"{CHECKPOINT_PATH}/twitter_sentiment/lightning_logs")
+def get_latest_version():
     # Find all version directories
     version_dirs = [d for d in logs_dir.iterdir() if d.is_dir() and re.match(r'version_\d+', d.name)]
     if not version_dirs:
@@ -327,6 +372,14 @@ def save_datasets_to_latest_version(train_dataset, val_dataset, test_dataset):
 
     # Get the most recent version by highest number
     latest_version = max(version_dirs, key=lambda d: int(re.search(r'\d+', d.name).group()))
+    return latest_version
+
+def save_datasets_to_latest_version(train_dataset, val_dataset, test_dataset):
+    if not logs_dir.exists():
+        print("No lightning_logs directory found.")
+        return
+
+    latest_version = get_latest_version()
     datasets_path = latest_version / "datasets.xlsx"
 
     # Convert datasets to DataFrames
